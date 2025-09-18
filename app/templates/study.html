@@ -23,16 +23,19 @@
 
   <div class="card">
     <table class="table">
-      <tr><th>Série</th><th>Previews</th><th>PDF</th><th>Ações</th></tr>
+      <tr><th>Série</th><th>Previews</th><th>Ações</th></tr>
       {% for row in series_rows %}
         {% set s_pdf  = url_for('http_pdf_series',   series_uid=row.series_uid) %}
         {% set s_prn  = url_for('http_print_series', series_uid=row.series_uid) %}
         <tr>
           <td><code>{{ row.series_uid }}</code></td>
-          <td>{{ row.n_prev }}</td>
-          <td>{% if row.pdf_url %}<a href="{{ s_pdf }}" target="_blank">Abrir</a>{% else %}(será gerado ao abrir){% endif %}</td>
-          <td>
-            <a class="btn" href="{{ s_pdf }}" target="_blank" onclick="return openAndSuggestPrint(this.href);">Imprimir</a>
+          <td>{{ row.preview_count }}</td>
+          <td style="display:flex;gap:8px;flex-wrap:wrap;">
+            <a class="btn" href="{{ s_pdf }}" target="_blank">Abrir PDF</a>
+            <a class="btn" href="{{ s_pdf }}" target="_blank" onclick="return openAndSuggestPrint(this.href);">Imprimir PDF</a>
+            {% if info.print_direct %}
+              <button class="btn" onclick="printDirect('{{ s_prn }}?direct=1')">Imprimir direto</button>
+            {% endif %}
           </td>
         </tr>
       {% endfor %}

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <div class="small">PDF por estudo: <b>{{ 'On' if info.pdf_study else 'Off' }}</b> • Cabeçalho: <b>{{ info.pdf_header }}</b> • Basic Auth: <b>{{ 'On' if info.basic_auth else 'Off' }}</b> • Impressão direta: <b>{{ 'On' if info.print_direct else 'Off' }}</b></div>
+    <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;">
+      <a class="btn primary" href="/browse">Abrir navegador de estudos</a>
+      <a class="btn" href="/series">Séries de hoje</a>
+      <a class="btn" href="/studies">Estudos de hoje</a>
+    </div>
+  </div>
+{% endblock %}

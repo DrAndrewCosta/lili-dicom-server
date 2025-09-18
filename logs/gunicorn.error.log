@@ -1,0 +1,68 @@
+[2025-09-18 11:20:27 -0300] [14905] [INFO] Starting gunicorn 21.2.0
+[2025-09-18 11:20:27 -0300] [14905] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 11:20:27 -0300] [14905] [ERROR] Retrying in 1 second.
+[2025-09-18 11:20:28 -0300] [14905] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 11:20:28 -0300] [14905] [ERROR] Retrying in 1 second.
+[2025-09-18 11:20:29 -0300] [14905] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 11:20:29 -0300] [14905] [ERROR] Retrying in 1 second.
+[2025-09-18 11:20:30 -0300] [14905] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 11:20:30 -0300] [14905] [ERROR] Retrying in 1 second.
+[2025-09-18 11:20:31 -0300] [14905] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 11:20:31 -0300] [14905] [ERROR] Retrying in 1 second.
+[2025-09-18 11:20:32 -0300] [14905] [ERROR] Can't connect to ('0.0.0.0', 8080)
+[2025-09-18 11:21:55 -0300] [14948] [INFO] Starting gunicorn 21.2.0
+[2025-09-18 11:21:55 -0300] [14948] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 11:21:55 -0300] [14948] [ERROR] Retrying in 1 second.
+[2025-09-18 11:21:56 -0300] [14948] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 11:21:56 -0300] [14948] [ERROR] Retrying in 1 second.
+[2025-09-18 11:21:57 -0300] [14948] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 11:21:57 -0300] [14948] [ERROR] Retrying in 1 second.
+[2025-09-18 11:21:58 -0300] [14948] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 11:21:58 -0300] [14948] [ERROR] Retrying in 1 second.
+[2025-09-18 11:21:59 -0300] [14948] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 11:21:59 -0300] [14948] [ERROR] Retrying in 1 second.
+[2025-09-18 11:22:00 -0300] [14948] [ERROR] Can't connect to ('0.0.0.0', 8080)
+[2025-09-18 11:42:21 -0300] [15426] [INFO] Starting gunicorn 21.2.0
+[2025-09-18 11:42:21 -0300] [15426] [INFO] Listening at: http://0.0.0.0:8080 (15426)
+[2025-09-18 11:42:21 -0300] [15426] [INFO] Using worker: gthread
+[2025-09-18 11:42:21 -0300] [15428] [INFO] Booting worker with pid: 15428
+[2025-09-18 16:18:10 -0300] [15426] [ERROR] Worker (pid:15428) was sent SIGHUP!
+[2025-09-18 16:18:10 -0300] [15426] [INFO] Handling signal: hup
+[2025-09-18 16:18:10 -0300] [15426] [INFO] Hang up: Master
+[2025-09-18 16:18:10 -0300] [22827] [INFO] Booting worker with pid: 22827
+[2025-09-18 16:22:09 -0300] [22959] [INFO] Starting gunicorn 21.2.0
+[2025-09-18 16:22:09 -0300] [22959] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:22:09 -0300] [22959] [ERROR] Retrying in 1 second.
+[2025-09-18 16:22:10 -0300] [22959] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:22:10 -0300] [22959] [ERROR] Retrying in 1 second.
+[2025-09-18 16:22:11 -0300] [22959] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:22:11 -0300] [22959] [ERROR] Retrying in 1 second.
+[2025-09-18 16:22:12 -0300] [22959] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:22:12 -0300] [22959] [ERROR] Retrying in 1 second.
+[2025-09-18 16:22:13 -0300] [22959] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:22:13 -0300] [22959] [ERROR] Retrying in 1 second.
+[2025-09-18 16:22:14 -0300] [22959] [ERROR] Can't connect to ('0.0.0.0', 8080)
+[2025-09-18 16:25:44 -0300] [23049] [INFO] Starting gunicorn 21.2.0
+[2025-09-18 16:25:44 -0300] [23049] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:25:44 -0300] [23049] [ERROR] Retrying in 1 second.
+[2025-09-18 16:25:45 -0300] [23049] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:25:45 -0300] [23049] [ERROR] Retrying in 1 second.
+[2025-09-18 16:25:46 -0300] [23049] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:25:46 -0300] [23049] [ERROR] Retrying in 1 second.
+[2025-09-18 16:25:47 -0300] [23049] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:25:47 -0300] [23049] [ERROR] Retrying in 1 second.
+[2025-09-18 16:25:48 -0300] [23049] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:25:48 -0300] [23049] [ERROR] Retrying in 1 second.
+[2025-09-18 16:25:49 -0300] [23049] [ERROR] Can't connect to ('0.0.0.0', 8080)
+[2025-09-18 16:51:36 -0300] [24008] [INFO] Starting gunicorn 21.2.0
+[2025-09-18 16:51:36 -0300] [24008] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:51:36 -0300] [24008] [ERROR] Retrying in 1 second.
+[2025-09-18 16:51:37 -0300] [24008] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:51:37 -0300] [24008] [ERROR] Retrying in 1 second.
+[2025-09-18 16:51:38 -0300] [24008] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:51:38 -0300] [24008] [ERROR] Retrying in 1 second.
+[2025-09-18 16:51:39 -0300] [24008] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:51:39 -0300] [24008] [ERROR] Retrying in 1 second.
+[2025-09-18 16:51:40 -0300] [24008] [ERROR] Connection in use: ('0.0.0.0', 8080)
+[2025-09-18 16:51:40 -0300] [24008] [ERROR] Retrying in 1 second.
+[2025-09-18 16:51:41 -0300] [24008] [ERROR] Can't connect to ('0.0.0.0', 8080)

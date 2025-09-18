@@ -1,0 +1,10 @@
+flask>=3.0,<4
+pydicom>=2.3,<3
+pynetdicom>=2.0,<3
+Pillow>=10,<11
+numpy>=1.23
+reportlab>=4,<5
+pylibjpeg>=2.0
+pylibjpeg-libjpeg>=2.0
+pylibjpeg-openjpeg>=2.0
+gunicorn>=21,<22

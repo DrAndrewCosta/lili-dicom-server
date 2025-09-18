@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="pt-br">
+  <head>
+    <meta charset="utf-8">
+    <title>{{ brand_title or 'LILI DICOM' }}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      :root { --brand: {{ brand_color or '#255375' }}; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; background:#f6f7fb; color:#222; }
+      header { background: var(--brand); color: #fff; padding: 14px 20px; display:flex; align-items:center; justify-content:space-between; }
+      header .title { font-weight: 700; letter-spacing:.3px; }
+      header .sub { font-size: 12px; opacity:.9 }
+      main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+      .card { background:#fff; border:1px solid #e6e8ef; border-radius:12px; padding:14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); margin-bottom:14px; }
+      .btn { border:1px solid #d7d9e0; background:#fff; padding:8px 10px; border-radius:10px; font-size:14px; cursor:pointer; text-decoration:none; color:#222; }
+      .btn:hover { background:#f1f3f9; }
+      .btn.primary { background: var(--brand); border-color: var(--brand); color:#fff; }
+      .input { padding:10px 12px; border:1px solid #d7d9e0; border-radius:10px; min-width:260px }
+      .small { color:#666; font-size:12px }
+      .table { width:100%; border-collapse: collapse; }
+      .table th, .table td { border-top:1px solid #eef0f5; padding:10px; text-align:left; vertical-align: top; }
+      .study-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap:12px; }
+      .study-card { border:1px solid #e6e8ef; border-radius:12px; padding:12px; background:#fff; display:flex; flex-direction:column; gap:10px; }
+      .thumb { width:100%; height:180px; border:1px dashed #e2e4ea; border-radius:10px; display:flex; align-items:center; justify-content:center; overflow:hidden; background:#fafbfe; }
+      .thumb img { width:100%; height:100%; object-fit:cover; }
+      code { background:#f3f4f8; padding:2px 4px; border-radius:6px; }
+      footer { text-align:center; color:#888; font-size:12px; padding:20px 0 28px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <div class="title">{{ brand_title or 'LILI DICOM' }}</div>
+        <div class="sub">AE {{ info.ae_title }} • Porta DICOM {{ info.port }} • Host(s): {{ ', '.join(info.host_ips) }}</div>
+      </div>
+      <div>
+        <a class="btn" href="/browse">Estudos</a>
+      </div>
+    </header>
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+    <footer>© {{ brand_title or 'LILI DICOM' }}</footer>
+
+    <script>
+      // Abre o PDF e tenta chamar a caixa de impressão do navegador
+      function openAndSuggestPrint(url) {
+        const w = window.open(url, '_blank');
+        if (!w) { alert('Pop-up bloqueado. Permita pop-ups para imprimir.'); return false; }
+        const tid = setInterval(() => {
+          try { w.focus(); w.print(); clearInterval(tid); } catch(e) {}
+        }, 700);
+        return false;
+      }
+      // Chama a impressão direta (CUPS) no backend
+      async function printDirect(url) {
+        try {
+          const r = await fetch(url, { method: 'GET', credentials: 'same-origin' });
+          if (r.ok) {
+            const j = await r.json().catch(()=>({}));
+            alert(j && j.printed ? 'Enviado para a impressora.' : 'Comando enviado.');
+          } else if (r.status === 403) {
+            alert('IP não autorizado para impressão direta (ALLOW_IPS).');
+          } else {
+            alert('Falha ao imprimir direto (' + r.status + ').');
+          }
+        } catch (e) {
+          alert('Erro de rede ao imprimir direto.');
+        }
+      }
+      function copyToClipboard(text) {
+        navigator.clipboard.writeText(text).then(()=>alert('Link copiado!')).catch(()=>alert('Não foi possível copiar.'));
+      }
+    </script>
+  </body>
+</html>

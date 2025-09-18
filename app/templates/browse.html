@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+    <input id="q" class="input" placeholder="Pesquisar (Paciente, ID, UID, data)..." oninput="filterCards()">
+    <span class="small">Últimos {{ days }} dia(s)</span>
+  </div>
+
+  <div class="study-grid">
+    {% for st in studies %}
+      <div class="study-card" data-hay="{{ st.haystack }}">
+        <div>
+          <div><b>{{ st.patient_name or 'Paciente ?' }}</b> <span class="small">• {{ st.patient_id or 'ID ?' }}</span></div>
+          <div class="small">{{ st.date_human }} • Study UID <code>{{ st.study_uid_short }}</code></div>
+          {% if st.study_desc %}<div class="small">Descrição: {{ st.study_desc }}</div>{% endif %}
+        </div>
+
+        <div class="thumb">
+          {% if st.first_preview %}
+            <img src="{{ st.first_preview_url }}" alt="preview">
+          {% else %}sem preview{% endif %}
+        </div>
+
+        {% set pdf_url       = url_for('http_pdf_study',   study_uid=st.study_uid) %}
+        {% set print_url     = url_for('http_print_study', study_uid=st.study_uid) %}
+        {% set print_url_dir = print_url + '?direct=1' %}
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <a class="btn primary" href="{{ pdf_url }}" target="_blank">Abrir PDF</a>
+          <a class="btn" href="{{ pdf_url }}" target="_blank" onclick="return openAndSuggestPrint(this.href);">Imprimir PDF</a>
+          {% if info.print_direct %}
+            <button class="btn" onclick="printDirect('{{ print_url_dir }}')">Imprimir direto</button>
+          {% endif %}
+          <a class="btn" href="{{ st.study_page_url }}">Ver séries</a>
+          <a class="btn" href="{{ st.zip_url }}">Baixar ZIP</a>
+          <button class="btn" onclick="copyToClipboard('{{ request.url_root.rstrip('/') }}{{ pdf_url }}')">Copiar link</button>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <script>
+    function filterCards() {
+      const q = document.getElementById('q').value.trim().toLowerCase();
+      document.querySelectorAll('.study-card').forEach(card => {
+        const hay = (card.getAttribute('data-hay') || '').toLowerCase();
+        card.style.display = hay.includes(q) ? '' : 'none';
+      });
+    }
+  </script>
+{% endblock %}

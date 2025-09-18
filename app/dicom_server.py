@@ -1,403 +1,852 @@
-import os, io, socket, logging, zipfile, subprocess
-from pathlib import Path
+import base64
+import io
+import logging
+import os
+import shutil
+import socket
+import subprocess
+import zipfile
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    send_from_directory,
+    url_for,
+)
 from PIL import Image
-from flask import Flask, render_template, jsonify, send_from_directory, send_file, abort, url_for, request, Response, redirect
-
 from pydicom import dcmread
-from pydicom.dataset import FileMetaDataset
-from pydicom.uid import (ExplicitVRLittleEndian, ImplicitVRLittleEndian, ExplicitVRBigEndian,
-    JPEGBaseline, JPEGExtended, JPEGLossless, JPEGLosslessSV1, JPEGLSNearLossless, JPEGLSLossless,
-    RLELossless, DeflatedExplicitVRLittleEndian)
-
-from pynetdicom import AE, evt, StoragePresentationContexts, build_context
+from pydicom.dataset import FileDataset, FileMetaDataset
+from pydicom.uid import (
+    DeflatedExplicitVRLittleEndian,
+    ExplicitVRBigEndian,
+    ExplicitVRLittleEndian,
+    ImplicitVRLittleEndian,
+    JPEGBaseline,
+    JPEGExtended,
+    JPEGLSLossless,
+    JPEGLSNearLossless,
+    JPEGLossless,
+    JPEGLosslessSV1,
+    RLELossless,
+)
+from pynetdicom import AE, evt, StoragePresentationContexts
 from pynetdicom.sop_class import Verification
-
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
-AE_TITLE = os.getenv("AE_TITLE","PACSANDREW").strip()
-DICOM_PORT = int(os.getenv("DICOM_PORT","11112"))
-WEB_PORT = int(os.getenv("WEB_PORT","8080"))
-STORE_DIR = Path(os.getenv("STORE_DIR", str(Path(__file__).parent / "storage")))
+# ---------------------------------------------------------------------------
+# Environment & configuration
+# ---------------------------------------------------------------------------
+
+AE_TITLE = os.getenv("AE_TITLE", "PACSANDREW").strip() or "PACSANDREW"
+DICOM_PORT = int(os.getenv("DICOM_PORT", "11112"))
+WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
+STORE_DIR = Path(os.getenv("STORE_DIR", Path(__file__).parent / "storage")).resolve()
 STORE_DIR.mkdir(parents=True, exist_ok=True)
 
-PDF_COLS = int(os.getenv("PDF_COLS","4"))
-PDF_ROWS = int(os.getenv("PDF_ROWS","2"))
-PDF_MARGIN = float(os.getenv("PDF_MARGIN","36"))
-PDF_HEADER = os.getenv("PDF_HEADER","Dr. Andrew Costa - ultrassomdermatologico.com")
-PDF_STUDY = os.getenv("PDF_STUDY","1").lower() not in ("0","false","no","off")
+PDF_COLS = int(os.getenv("PDF_COLS", "4"))
+PDF_ROWS = int(os.getenv("PDF_ROWS", "2"))
+PDF_HEADER = os.getenv(
+    "PDF_HEADER", "Dr. Andrew Costa - ultrassomdermatologico.com"
+).strip()
+PDF_STUDY = os.getenv("PDF_STUDY", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 
-BRAND_TITLE = os.getenv("BRAND_TITLE","LILI DICOM")
-BRAND_COLOR = os.getenv("BRAND_COLOR","#255375")
+BASIC_AUTH_USER = os.getenv("BASIC_AUTH_USER", "admin").strip()
+BASIC_AUTH_PASS = os.getenv("BASIC_AUTH_PASS", "admin").strip()
+PRINT_DIRECT = os.getenv("PRINT_DIRECT", "1").strip().lower() in {
+    "1",
+    "true",
+    "on",
+    "yes",
+}
+PRINTER_NAME = os.getenv("PRINTER_NAME", "").strip()
+ALLOW_IPS = [
+    ip.strip()
+    for ip in os.getenv("ALLOW_IPS", "127.0.0.1,::1").split(",")
+    if ip.strip()
+]
+BRAND_TITLE = os.getenv("BRAND_TITLE", "LILI DICOM").strip() or "LILI DICOM"
+BRAND_COLOR = os.getenv("BRAND_COLOR", "#255375").strip() or "#255375"
 
-# Defaults updated per your request: admin/admin and print-direct on
-BASIC_AUTH_USER = os.getenv("BASIC_AUTH_USER","admin").strip()
-BASIC_AUTH_PASS = os.getenv("BASIC_AUTH_PASS","admin").strip()
-PRINT_DIRECT = os.getenv("PRINT_DIRECT","1").lower() in ("1","true","on","yes")
-PRINTER_NAME = os.getenv("PRINTER_NAME","").strip()  # empty => impressora padrão do macOS
-ALLOW_IPS = [ip.strip() for ip in os.getenv("ALLOW_IPS","127.0.0.1,::1").split(",") if ip.strip()]
+LOG_PATH = Path(__file__).parent / "dicom_server.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_PATH, encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+LOGGER = logging.getLogger("lili_dicom")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[logging.FileHandler(Path(__file__).parent / "dicom_server.log"), logging.StreamHandler()])
-logger = logging.getLogger("dicom")
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-def get_ip_addresses():
-    ips=set(); ips.add("127.0.0.1")
+
+def _percentile_window(arr: np.ndarray) -> Tuple[float, float]:
     try:
-        hn=socket.gethostname(); ips.add(socket.gethostbyname(hn))
-    except Exception: pass
-    try:
-        s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("8.8.8.8",80))
-        ips.add(s.getsockname()[0]); s.close()
-    except Exception: pass
-    return sorted(ips)
-
-def unauthorized():
-    return Response("Auth required", 401, {"WWW-Authenticate": 'Basic realm="DICOM UI"'})
-def check_auth():
-    if not BASIC_AUTH_USER: return True
-    auth = request.headers.get("Authorization","")
-    if not auth.startswith("Basic "): return False
-    import base64
-    try:
-        userpass = base64.b64decode(auth.split(" ",1)[1]).decode("utf-8")
-        user, pw = userpass.split(":",1)
-        return (user == BASIC_AUTH_USER) and (pw == BASIC_AUTH_PASS)
+        lo = float(np.percentile(arr, 1.0))
+        hi = float(np.percentile(arr, 99.0))
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            raise ValueError
+        return lo, hi
     except Exception:
-        return False
+        lo = float(np.min(arr))
+        hi = float(np.max(arr))
+        if hi <= lo:
+            hi = lo + 1.0
+        return lo, hi
 
-app = Flask(__name__,
-            template_folder=str(Path(__file__).parent / "templates"),
-            static_folder=str(Path(__file__).parent / "static"))
 
-@app.before_request
-def _basic_auth_guard():
-    if request.path in ("/healthz","/readyz"): return
-    if not check_auth(): return unauthorized()
+def dataset_to_image(ds: FileDataset) -> Optional[Image.Image]:
+    """Return a RGB PIL.Image from the dataset or None if not possible."""
 
-def normalize_to_uint8(arr):
-    arr = arr.astype(np.float32)
-    lo = np.percentile(arr, 1.0); hi = np.percentile(arr, 99.0)
-    if hi <= lo:
-        lo, hi = float(arr.min()), float(arr.max() if arr.max()!=arr.min() else (arr.min()+1))
-    arr = np.clip((arr - lo) / (hi - lo), 0, 1) * 255.0
-    return arr.astype(np.uint8)
-
-def ds_to_pil(ds):
+    if not hasattr(ds, "pixel_array"):
+        return None
     try:
-        arr = ds.pixel_array
-    except Exception as e:
-        logger.warning(f"Preview skipped: {e}"); return None
-    if arr.ndim==2:
-        img = Image.fromarray(normalize_to_uint8(arr),'L')
-        if getattr(ds,"PhotometricInterpretation","").upper()=="MONOCHROME1":
-            arr = 255 - np.array(img); img = Image.fromarray(arr.astype(np.uint8),'L')
+        array = ds.pixel_array
+    except Exception as exc:  # pragma: no cover - relies on native handlers
+        LOGGER.warning("pixel_array unavailable: %s", exc)
+        return None
+
+    if array.ndim == 2:
+        lo, hi = _percentile_window(array.astype(np.float32))
+        scaled = np.clip((array - lo) / (hi - lo), 0, 1) * 255.0
+        img = Image.fromarray(scaled.astype(np.uint8), mode="L")
+        if getattr(ds, "PhotometricInterpretation", "MONOCHROME2").upper() == "MONOCHROME1":
+            img = Image.fromarray(255 - np.array(img), mode="L")
         return img.convert("RGB")
-    elif arr.ndim==3:
-        if arr.shape[2]==3: return Image.fromarray(arr.astype(np.uint8),"RGB")
-        else: return Image.fromarray(normalize_to_uint8(arr[...,0]),'L').convert("RGB")
+
+    if array.ndim == 3:
+        if array.shape[-1] == 3:
+            return Image.fromarray(array.astype(np.uint8), mode="RGB")
+        if array.shape[0] == 3:
+            return Image.fromarray(np.moveaxis(array, 0, -1).astype(np.uint8), mode="RGB")
+        lo, hi = _percentile_window(array[..., 0].astype(np.float32))
+        scaled = np.clip((array[..., 0] - lo) / (hi - lo), 0, 1) * 255.0
+        return Image.fromarray(scaled.astype(np.uint8), mode="L").convert("RGB")
+
     return None
 
-import re
-_re_inst = re.compile(r"i(\\d+)", re.IGNORECASE)
-def _files_sorted_by_instance(files):
-    def key(p):
-        m = _re_inst.search(p.stem)
-        if m:
-            try: return (int(m.group(1)), p.stem)
-            except: pass
-        return (999999, p.stem)
-    return sorted(files, key=key)
-def _caption_from_name(p):
-    m = _re_inst.search(p.stem)
-    return f"Inst #{int(m.group(1))}" if m else p.stem
 
-def build_contact_sheet_pdf(previews_dir: Path, pdf_path: Path):
-    files = [f for f in previews_dir.glob("*.png")]
-    if not files: return
-    files = _files_sorted_by_instance(files)
-    from reportlab.lib.pagesizes import A4
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.utils import ImageReader
-    PAGE_W, PAGE_H = A4; margin = PDF_MARGIN; cols, rows = PDF_COLS, PDF_ROWS
-    header_h = 20 if PDF_HEADER.strip() else 0
-    c = canvas.Canvas(str(pdf_path), pagesize=A4); c.setAuthor("DICOM Server")
-    usable_h = PAGE_H - (rows+1)*margin - header_h
-    cell_w = (PAGE_W - (cols+1)*margin)/cols; cell_h = usable_h/rows
-    for i, p in enumerate(files):
-        if i % (cols*rows) == 0:
-            if i>0: c.showPage()
-            if header_h: c.setFont("Helvetica", 11); c.drawCentredString(PAGE_W/2, PAGE_H - margin/2 - 6, PDF_HEADER)
-        idx = i % (cols*rows); r = rows-1-(idx//cols); col = idx%cols
-        x = margin + col*(cell_w+margin); y = margin + r*(cell_h+margin) + header_h
-        try: im = Image.open(p).convert("RGB")
-        except: continue
-        iw, ih = im.size; scale = min(cell_w/iw, (cell_h-12-4)/ih)
-        dw, dh = iw*scale, ih*scale; dx = x+(cell_w-dw)/2; dy = y+(cell_h-12-dh)/2 + 6
-        buf = io.BytesIO(); im.save(buf, format="JPEG", quality=85, optimize=True); buf.seek(0)
-        c.drawImage(ImageReader(buf), dx, dy, width=dw, height=dh)
-        c.setFont("Helvetica",8); c.drawCentredString(x+cell_w/2, y+2, _caption_from_name(p))
-    c.showPage(); c.save()
-
-def build_study_pdf(study_dir: Path, out_pdf: Path):
-    from reportlab.lib.pagesizes import A4
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.utils import ImageReader
-    PAGE_W, PAGE_H = A4; margin = PDF_MARGIN; cols, rows = PDF_COLS, PDF_ROWS
-    header_h = 20 if PDF_HEADER.strip() else 0
-    files_any=False; c=None
-    for sdir in sorted([d for d in study_dir.iterdir() if d.is_dir()]):
-        previews = sdir / "previews"
-        if not previews.is_dir(): continue
-        files = [f for f in previews.glob("*.png")]
-        if not files: continue
-        files = _files_sorted_by_instance(files)
-        if c is None:
-            c = canvas.Canvas(str(out_pdf), pagesize=A4); c.setAuthor("DICOM Server")
-        usable_h = PAGE_H - (rows+1)*margin - header_h
-        cell_w = (PAGE_W - (cols+1)*margin)/cols; cell_h = usable_h/rows
-        for i, p in enumerate(files):
-            files_any=True
-            if i % (cols*rows) == 0:
-                if i>0: c.showPage()
-                if header_h:
-                    c.setFont("Helvetica",11); c.drawCentredString(PAGE_W/2, PAGE_H - margin/2 - 6, PDF_HEADER)
-                    c.setFont("Helvetica",10); c.drawString(margin, PAGE_H - margin - (header_h + 6), f"Série: {sdir.name}")
-            idx = i % (cols*rows); r = rows-1-(idx//cols); col = idx%cols
-            x = margin + col*(cell_w+margin); y = margin + r*(cell_h+margin) + header_h
-            try: im = Image.open(p).convert("RGB")
-            except: continue
-            iw, ih = im.size; scale = min(cell_w/iw, (cell_h-12-4)/ih)
-            dw, dh = iw*scale, ih*scale; dx = x+(cell_w-dw)/2; dy = y+(cell_h-12-dh)/2 + 6
-            buf = io.BytesIO(); im.save(buf, format="JPEG", quality=85, optimize=True); buf.seek(0)
-            c.drawImage(ImageReader(buf), dx, dy, width=dw, height=dh)
-            c.setFont("Helvetica",8); c.drawCentredString(x+cell_w/2, y+2, _caption_from_name(p))
-    if c and files_any: c.showPage(); c.save()
-
-class DicomServer:
-    def __init__(self, ae_title, port, store_dir: Path):
-        self.ae_title=ae_title; self.port=port; self.store_dir=store_dir
-        self.ae = AE(ae_title=ae_title)
-        ts_list = [ExplicitVRLittleEndian, ImplicitVRLittleEndian, ExplicitVRBigEndian,
-            JPEGBaseline, JPEGExtended, JPEGLossless, JPEGLosslessSV1, JPEGLSNearLossless, JPEGLSLossless,
-            RLELossless, DeflatedExplicitVRLittleEndian]
-        self.ae.supported_contexts = [build_context(cx.abstract_syntax, ts_list) for cx in StoragePresentationContexts]
-        self.ae.add_supported_context(Verification)
-        self.ae.maximum_pdu_size = 16*1024*1024
-        self.ae.acse_timeout = 30; self.ae.dimse_timeout = 30; self.ae.network_timeout = 30
-        self.ae.maximum_associations = 25
-        self.server=None
-    def handle_store(self, event):
-        try:
-            ds = event.dataset; fmeta = FileMetaDataset()
-            try:
-                req = event.request
-                fmeta.MediaStorageSOPClassUID = req.AffectedSOPClassUID
-                fmeta.MediaStorageSOPInstanceUID = req.AffectedSOPInstanceUID
-                fmeta.TransferSyntaxUID = event.context.transfer_syntax
-            except: pass
-            ds.file_meta = fmeta; ds.is_little_endian=True; ds.is_implicit_VR=False
-            now = datetime.now(); study_uid = getattr(ds,"StudyInstanceUID","UnknownStudy"); series_uid = getattr(ds,"SeriesInstanceUID","UnknownSeries"); sop_uid = getattr(ds,"SOPInstanceUID", now.strftime("%H%M%S%f"))
-            series_dir = self.store_dir / now.strftime("%Y") / now.strftime("%m") / now.strftime("%d") / study_uid / series_uid
-            series_dir.mkdir(parents=True, exist_ok=True)
-            out_path = series_dir / f"{sop_uid}.dcm"; ds.save_as(out_path, write_like_original=False)
-            try:
-                img = ds_to_pil(ds)
-                if img is not None:
-                    previews = series_dir / "previews"; previews.mkdir(exist_ok=True)
-                    existing = sorted(previews.glob("*.png")); idx = len(existing) + 1
-                    inst = getattr(ds,"InstanceNumber", None); sort_key=999999
-                    if inst is not None:
-                        try: sort_key=max(0,int(str(inst)))
-                        except: sort_key=999999
-                    img.save(previews / f"i{sort_key:05d}_{idx:04d}.png", format='PNG', optimize=True)
-            except Exception as e:
-                logger.warning(f"no preview: {e}")
-            try:
-                previews = series_dir / "previews"
-                if previews.exists(): build_contact_sheet_pdf(previews, series_dir / "SeriesContactSheet.pdf")
-                if PDF_STUDY:
-                    build_study_pdf(series_dir.parent, series_dir.parent / "StudyContactSheet.pdf")
-            except Exception as e:
-                logger.warning(f"pdf fail: {e}")
-            return 0x0000
-        except Exception as e:
-            logger.exception(f"C-STORE error: {e}")
-            return 0xA700
-    def handle_echo(self, event): return 0x0000
-    def start(self):
-        handlers=[(evt.EVT_C_STORE,self.handle_store),(evt.EVT_C_ECHO,self.handle_echo)]
-        self.server = self.ae.start_server(("", self.port), block=False, evt_handlers=handlers)
-        logger.info(f"DICOM server started AE={self.ae_title} PORT={self.port} STORE={self.store_dir}")
-        return self.server
-
-dicom_server = DicomServer(AE_TITLE, DICOM_PORT, STORE_DIR); dicom_server.start()
-
-def human_date_from_dir(d: Path):
+def _safe_instance_number(ds: FileDataset) -> int:
+    value = getattr(ds, "InstanceNumber", None)
     try:
-        y,m,dd = d.parts[-3:]
-        return f"{dd}/{m}/{y}"
-    except: return d.name
-def pick_one_dcm(series_dir: Path):
-    for p in series_dir.iterdir():
-        if p.is_file() and p.suffix.lower()==".dcm": return p
-    return None
-def get_study_metadata(study_dir: Path):
-    meta = {"patient_name":None,"patient_id":None,"study_desc":None,"date":None}
-    for sdir in sorted([x for x in study_dir.iterdir() if x.is_dir()]):
-        dcm = pick_one_dcm(sdir)
-        if dcm:
-            try:
-                ds = dcmread(str(dcm), stop_before_pixels=True, force=True)
-                meta["patient_name"] = str(getattr(ds,"PatientName", "")) or None
-                meta["patient_id"] = str(getattr(ds,"PatientID", "")) or None
-                meta["study_desc"] = str(getattr(ds,"StudyDescription", "")) or None
-                sd = getattr(ds,"StudyDate", None) or getattr(ds,"SeriesDate", None)
-                if sd and len(str(sd))>=8:
-                    y,m,d = sd[:4], sd[4:6], sd[6:8]; meta["date"] = f"{d}/{m}/{y}"
-                break
-            except Exception: continue
-    return meta
-def iter_days(base_dir: Path, days:int=7):
+        return int(str(value))
+    except Exception:
+        return 999999
+
+
+def _unique_preview_path(previews_dir: Path, instance_number: int) -> Path:
+    previews_dir.mkdir(parents=True, exist_ok=True)
+    index = 1
+    while True:
+        candidate = previews_dir / f"i{instance_number:05d}_{index:04d}.png"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def save_preview_image(ds: FileDataset, series_dir: Path) -> Optional[Path]:
+    image = dataset_to_image(ds)
+    if image is None:
+        return None
+    previews_dir = series_dir / "previews"
+    outfile = _unique_preview_path(previews_dir, _safe_instance_number(ds))
+    outfile.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        image.save(outfile, format="PNG", optimize=True)
+        return outfile
+    except Exception as exc:
+        LOGGER.warning("failed to save preview: %s", exc)
+        return None
+
+
+def _draw_contact_sheet(
+    image_paths: Sequence[Path],
+    destination: Path,
+    header: str,
+    subtitle: Optional[str] = None,
+) -> None:
+    PAGE_W, PAGE_H = A4
+    cols, rows = max(PDF_COLS, 1), max(PDF_ROWS, 1)
+    margin = 36.0
+    header_height = 20 if header else 0
+
+    c = canvas.Canvas(str(destination), pagesize=A4)
+    c.setTitle("Contact Sheet")
+
+    usable_height = PAGE_H - (rows + 1) * margin - header_height
+    cell_w = (PAGE_W - (cols + 1) * margin) / cols
+    cell_h = usable_height / rows
+
+    for idx, image_path in enumerate(image_paths):
+        if idx % (cols * rows) == 0:
+            if idx:
+                c.showPage()
+            if header:
+                c.setFont("Helvetica", 11)
+                c.drawCentredString(PAGE_W / 2, PAGE_H - margin / 2 - 6, header)
+            if subtitle:
+                c.setFont("Helvetica", 9)
+                c.drawString(margin, PAGE_H - margin - header_height - 8, subtitle)
+
+        pos = idx % (cols * rows)
+        row = rows - 1 - pos // cols
+        col = pos % cols
+        x = margin + col * (cell_w + margin)
+        y = margin + row * (cell_h + margin) + header_height
+        try:
+            with Image.open(image_path) as image:
+                image = image.convert("RGB")
+                buf = io.BytesIO()
+                image.save(buf, format="JPEG", quality=85, optimize=True)
+                buf.seek(0)
+                reader = ImageReader(buf)
+                iw, ih = image.size
+        except Exception as exc:  # pragma: no cover - depends on PIL
+            LOGGER.warning("could not load preview for PDF: %s", exc)
+            continue
+
+        scale = min(cell_w / iw, (cell_h - 16) / ih)
+        draw_w = iw * scale
+        draw_h = ih * scale
+        dx = x + (cell_w - draw_w) / 2
+        dy = y + (cell_h - 16 - draw_h) / 2 + 8
+        c.drawImage(reader, dx, dy, width=draw_w, height=draw_h)
+        c.setFont("Helvetica", 8)
+        c.drawCentredString(x + cell_w / 2, y + 2, image_path.stem)
+
+    c.showPage()
+    c.save()
+
+
+def _draw_diagnostic_pdf(destination: Path, header: str, lines: Sequence[str]) -> None:
+    PAGE_W, PAGE_H = A4
+    margin = 36.0
+    c = canvas.Canvas(str(destination), pagesize=A4)
+    if header:
+        c.setFont("Helvetica", 11)
+        c.drawCentredString(PAGE_W / 2, PAGE_H - margin / 2 - 6, header)
+    c.setFont("Helvetica-Bold", 13)
+    c.drawString(margin, PAGE_H - margin - 24, "PDF de diagnóstico")
+    c.setFont("Helvetica", 10)
+    y = PAGE_H - margin - 48
+    for line in lines:
+        c.drawString(margin, y, f"- {line}")
+        y -= 14
+        if y <= margin:
+            c.showPage()
+            y = PAGE_H - margin
+    if y == PAGE_H - margin:
+        c.showPage()
+    c.save()
+
+
+def _series_preview_files(series_dir: Path) -> List[Path]:
+    previews_dir = series_dir / "previews"
+    if previews_dir.is_dir():
+        return sorted(previews_dir.glob("*.png"))
+    return []
+
+
+def _collect_dicom_files(series_dir: Path) -> List[Path]:
+    return sorted(p for p in series_dir.glob("*.dcm"))
+
+
+def ensure_previews_for_series(series_dir: Path, limit: Optional[int] = None) -> Tuple[List[Path], List[str]]:
+    errors: List[str] = []
+    previews = _series_preview_files(series_dir)
+    needed = None if limit is None else max(limit - len(previews), 0)
+    if needed == 0:
+        return previews, errors
+
+    dicoms = _collect_dicom_files(series_dir)
+    if not dicoms:
+        return previews, errors
+
+    for path in dicoms:
+        if limit is not None and len(previews) >= limit:
+            break
+        try:
+            ds = dcmread(str(path), force=True)
+        except Exception as exc:
+            errors.append(f"Falha ao ler {path.name}: {exc}")
+            continue
+        if not hasattr(ds, "PixelData"):
+            errors.append(f"{path.name} não possui PixelData")
+            continue
+        saved = save_preview_image(ds, series_dir)
+        if saved is not None:
+            previews.append(saved)
+    return sorted(previews), errors
+
+
+def generate_series_pdf(series_dir: Path, *, allow_preview_generation: bool = True) -> Path:
+    pdf_path = series_dir / "SeriesContactSheet.pdf"
+    previews, errors = ensure_previews_for_series(
+        series_dir,
+        limit=PDF_COLS * PDF_ROWS if allow_preview_generation else None,
+    )
+    if previews:
+        subtitle = f"Série: {series_dir.name}"
+        _draw_contact_sheet(previews, pdf_path, PDF_HEADER, subtitle=subtitle)
+    else:
+        if allow_preview_generation:
+            errors.append("Nenhum preview disponível para esta série.")
+        _draw_diagnostic_pdf(pdf_path, PDF_HEADER, errors)
+    return pdf_path
+
+
+def generate_study_pdf(study_dir: Path, *, allow_preview_generation: bool = True) -> Path:
+    pdf_path = study_dir / "StudyContactSheet.pdf"
+    all_previews: List[Path] = []
+    errors: List[str] = []
+    for series_dir in sorted(p for p in study_dir.iterdir() if p.is_dir()):
+        previews, p_errors = ensure_previews_for_series(series_dir, limit=1 if allow_preview_generation else None)
+        all_previews.extend(previews)
+        errors.extend(p_errors)
+    if all_previews:
+        _draw_contact_sheet(all_previews, pdf_path, PDF_HEADER)
+    else:
+        if allow_preview_generation:
+            errors.append("Nenhuma miniatura foi criada para o estudo.")
+        _draw_diagnostic_pdf(pdf_path, PDF_HEADER, errors)
+    return pdf_path
+
+
+def _iter_day_dirs() -> Iterable[Path]:
+    for year_dir in sorted(STORE_DIR.iterdir()):
+        if not year_dir.is_dir() or not year_dir.name.isdigit():
+            continue
+        for month_dir in sorted(year_dir.iterdir()):
+            if not month_dir.is_dir() or not month_dir.name.isdigit():
+                continue
+            for day_dir in sorted(month_dir.iterdir()):
+                if day_dir.is_dir() and day_dir.name.isdigit():
+                    yield day_dir
+
+
+def find_study_dir(study_uid: str) -> Optional[Path]:
+    matches: List[Path] = []
+    for day_dir in _iter_day_dirs():
+        candidate = day_dir / study_uid
+        if candidate.is_dir():
+            matches.append(candidate)
+    if not matches:
+        return None
+    return max(matches, key=lambda p: p.stat().st_mtime)
+
+
+def find_series_dir(series_uid: str) -> Optional[Path]:
+    matches: List[Path] = []
+    for day_dir in _iter_day_dirs():
+        for study_dir in day_dir.iterdir():
+            if not study_dir.is_dir():
+                continue
+            candidate = study_dir / series_uid
+            if candidate.is_dir():
+                matches.append(candidate)
+    if not matches:
+        return None
+    return max(matches, key=lambda p: p.stat().st_mtime)
+
+
+def _pick_date_parts(ds: FileDataset) -> Tuple[str, str, str]:
+    candidates = [
+        getattr(ds, "StudyDate", ""),
+        getattr(ds, "SeriesDate", ""),
+        getattr(ds, "AcquisitionDate", ""),
+        getattr(ds, "ContentDate", ""),
+    ]
+    for value in candidates:
+        value = str(value)
+        if len(value) >= 8 and value[:8].isdigit():
+            return value[:4], value[4:6], value[6:8]
+    now = datetime.now()
+    return now.strftime("%Y"), now.strftime("%m"), now.strftime("%d")
+
+
+def _study_metadata_from_series(series_dir: Path) -> dict:
+    metadata = {
+        "patient_name": None,
+        "patient_id": None,
+        "study_desc": None,
+        "study_date": None,
+    }
+    dicoms = _collect_dicom_files(series_dir)
+    if not dicoms:
+        return metadata
+    try:
+        ds = dcmread(str(dicoms[0]), stop_before_pixels=True, force=True)
+    except Exception:
+        return metadata
+    metadata["patient_name"] = str(getattr(ds, "PatientName", "") or "") or None
+    metadata["patient_id"] = str(getattr(ds, "PatientID", "") or "") or None
+    metadata["study_desc"] = str(getattr(ds, "StudyDescription", "") or "") or None
+    date_val = getattr(ds, "StudyDate", "") or getattr(ds, "SeriesDate", "")
+    if date_val and len(str(date_val)) >= 8:
+        metadata["study_date"] = f"{str(date_val)[6:8]}/{str(date_val)[4:6]}/{str(date_val)[:4]}"
+    return metadata
+
+
+def collect_study_metadata(study_dir: Path) -> dict:
+    metadata = {
+        "patient_name": None,
+        "patient_id": None,
+        "study_desc": None,
+        "study_date": None,
+    }
+    for series_dir in sorted(p for p in study_dir.iterdir() if p.is_dir()):
+        series_meta = _study_metadata_from_series(series_dir)
+        for key, value in series_meta.items():
+            if value and not metadata.get(key):
+                metadata[key] = value
+        if metadata["patient_name"] or metadata["patient_id"]:
+            break
+    return metadata
+
+
+def iter_recent_day_dirs(days: int) -> Iterable[Path]:
     now = datetime.now()
     for i in range(days):
         dt = now - timedelta(days=i)
-        d = base_dir / dt.strftime("%Y") / dt.strftime("%m") / dt.strftime("%d")
-        if d.exists(): yield d
+        day_dir = STORE_DIR / dt.strftime("%Y") / dt.strftime("%m") / dt.strftime("%d")
+        if day_dir.exists():
+            yield day_dir
 
-def _client_ip_allowed(req):
-    ip = req.headers.get("X-Forwarded-For", req.remote_addr or "")
-    ip = (ip or "").split(",")[0].strip()
-    return (ip in ALLOW_IPS)
 
-from flask import jsonify
+def get_host_ips() -> List[str]:
+    hosts = {"127.0.0.1"}
+    try:
+        hostname = socket.gethostname()
+        hosts.add(socket.gethostbyname(hostname))
+    except Exception:
+        pass
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        hosts.add(sock.getsockname()[0])
+        sock.close()
+    except Exception:
+        pass
+    return sorted(hosts)
+
+
+def _client_ip() -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return (request.remote_addr or "").strip()
+
+
+def _ensure_auth() -> Optional[Response]:
+    if not BASIC_AUTH_USER:
+        return None
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Basic "):
+        return Response("Auth required", 401, {"WWW-Authenticate": 'Basic realm="LILI DICOM"'})
+    try:
+        decoded = base64.b64decode(header.split(" ", 1)[1]).decode("utf-8")
+        user, password = decoded.split(":", 1)
+    except Exception:
+        return Response("Auth required", 401, {"WWW-Authenticate": 'Basic realm="LILI DICOM"'})
+    if user == BASIC_AUTH_USER and password == BASIC_AUTH_PASS:
+        return None
+    return Response("Auth required", 401, {"WWW-Authenticate": 'Basic realm="LILI DICOM"'})
+
+
+# ---------------------------------------------------------------------------
+# DICOM Server
+# ---------------------------------------------------------------------------
+
+
+class DicomServer:
+    def __init__(self, ae_title: str, port: int, store_dir: Path) -> None:
+        self.ae_title = ae_title
+        self.port = port
+        self.store_dir = store_dir
+        self.ae = AE(ae_title=ae_title)
+        transfer_syntaxes = [
+            ExplicitVRLittleEndian,
+            ImplicitVRLittleEndian,
+            ExplicitVRBigEndian,
+            JPEGBaseline,
+            JPEGExtended,
+            JPEGLossless,
+            JPEGLosslessSV1,
+            JPEGLSNearLossless,
+            JPEGLSLossless,
+            RLELossless,
+            DeflatedExplicitVRLittleEndian,
+        ]
+        for context in StoragePresentationContexts:
+            self.ae.add_supported_context(
+                context.abstract_syntax,
+                transfer_syntaxes,
+            )
+        self.ae.add_supported_context(Verification)
+        self.ae.maximum_pdu_size = 16 * 1024 * 1024
+        self.ae.acse_timeout = 30
+        self.ae.dimse_timeout = 30
+        self.ae.network_timeout = 30
+        self.ae.maximum_associations = 25
+        self.server = None
+
+    def start(self) -> None:
+        handlers = [
+            (evt.EVT_C_STORE, self.handle_store),
+            (evt.EVT_C_ECHO, self.handle_echo),
+        ]
+        self.server = self.ae.start_server(("", self.port), block=False, evt_handlers=handlers)
+        LOGGER.info("DICOM server started (AE=%s, port=%s)", self.ae_title, self.port)
+
+    @staticmethod
+    def handle_echo(event) -> int:  # pragma: no cover - network callback
+        return 0x0000
+
+    def handle_store(self, event) -> int:  # pragma: no cover - network callback
+        try:
+            ds = event.dataset
+            file_meta = FileMetaDataset()
+            try:
+                request = event.request
+                file_meta.MediaStorageSOPClassUID = request.AffectedSOPClassUID
+                file_meta.MediaStorageSOPInstanceUID = request.AffectedSOPInstanceUID
+                file_meta.TransferSyntaxUID = event.context.transfer_syntax
+            except Exception:
+                pass
+            ds.file_meta = file_meta
+            ds.is_little_endian = True
+            ds.is_implicit_VR = False
+
+            year, month, day = _pick_date_parts(ds)
+            study_uid = getattr(ds, "StudyInstanceUID", datetime.now().strftime("%Y%m%d%H%M%S"))
+            series_uid = getattr(ds, "SeriesInstanceUID", "UnknownSeries")
+            sop_uid = getattr(ds, "SOPInstanceUID", datetime.now().strftime("%H%M%S%f"))
+
+            series_dir = self.store_dir / year / month / day / study_uid / series_uid
+            series_dir.mkdir(parents=True, exist_ok=True)
+            outfile = series_dir / f"{sop_uid}.dcm"
+            ds.save_as(outfile, write_like_original=False)
+            LOGGER.info("Stored SOP %s in %s", sop_uid, series_dir)
+
+            try:
+                preview_path = save_preview_image(ds, series_dir)
+                if preview_path:
+                    LOGGER.info("Generated preview %s", preview_path.name)
+            except Exception as exc:
+                LOGGER.warning("Preview generation failed: %s", exc)
+
+            try:
+                generate_series_pdf(series_dir, allow_preview_generation=False)
+                if PDF_STUDY:
+                    generate_study_pdf(series_dir.parent, allow_preview_generation=False)
+            except Exception as exc:
+                LOGGER.warning("PDF generation failed: %s", exc)
+
+            return 0x0000
+        except Exception as exc:
+            LOGGER.exception("C-STORE handler failure: %s", exc)
+            return 0xA700
+
+
+DICOM_SERVER: Optional[DicomServer]
+if os.getenv("LILI_DISABLE_DICOM_SERVER", "0").strip() == "1":
+    LOGGER.info("DICOM server start disabled by LILI_DISABLE_DICOM_SERVER=1")
+    DICOM_SERVER = None
+else:
+    DICOM_SERVER = DicomServer(AE_TITLE, DICOM_PORT, STORE_DIR)
+    DICOM_SERVER.start()
+
+# ---------------------------------------------------------------------------
+# Flask application
+# ---------------------------------------------------------------------------
+
+app = Flask(
+    __name__,
+    template_folder=str(Path(__file__).parent / "templates"),
+    static_folder=str(Path(__file__).parent / "static"),
+)
+
+
+@app.before_request
+def require_authentication():  # pragma: no cover - integrates with Flask
+    if request.path in {"/healthz", "/readyz"}:
+        return None
+    return _ensure_auth()
+
+
 @app.route("/")
-def index():
-    info = {"ae_title": AE_TITLE, "port": DICOM_PORT, "store_dir": str(STORE_DIR.resolve()),
-            "host_ips": get_ip_addresses(), "pdf_study": PDF_STUDY, "pdf_header": PDF_HEADER,
-            "basic_auth": bool(BASIC_AUTH_USER), "print_direct": PRINT_DIRECT}
-    return render_template("index.html", info=info, brand_title=BRAND_TITLE, brand_color=BRAND_COLOR)
+def root():
+    return redirect(url_for("browse"))
+
 
 @app.route("/healthz")
-def healthz(): return jsonify({"status":"ok"}), 200
+def healthz():
+    return jsonify({"status": "ok"})
+
+
 @app.route("/readyz")
-def readyz(): return jsonify({"ready":True}), 200
+def readyz():
+    return jsonify({"ready": True})
+
 
 @app.route("/logs")
-def logs():
-    log_path = Path(__file__).parent / "dicom_server.log"
+def http_logs():
     try:
-        with open(log_path,"r",encoding="utf-8",errors="ignore") as f:
-            return jsonify({"lines": f.readlines()[-500:]})
-    except: return jsonify({"lines":[]})
+        with open(LOG_PATH, "r", encoding="utf-8", errors="ignore") as handle:
+            tail = handle.readlines()[-500:]
+    except FileNotFoundError:
+        tail = []
+    return jsonify({"lines": tail})
+
 
 @app.route("/storage/<path:subpath>")
-def storage(subpath): return send_from_directory(STORE_DIR, subpath, as_attachment=False)
+def http_storage(subpath: str):
+    return send_from_directory(STORE_DIR, subpath)
+
+
+def _info_payload() -> dict:
+    return {
+        "ae_title": AE_TITLE,
+        "port": DICOM_PORT,
+        "web_port": WEB_PORT,
+        "store_dir": str(STORE_DIR),
+        "host_ips": get_host_ips(),
+        "pdf_header": PDF_HEADER,
+        "pdf_study": PDF_STUDY,
+        "basic_auth": bool(BASIC_AUTH_USER),
+        "print_direct": PRINT_DIRECT,
+    }
+
 
 @app.route("/browse")
 def browse():
     days = int(request.args.get("days", "7"))
-    studies_data = []
-    for day_dir in iter_days(STORE_DIR, days=days):
-        y = day_dir.parts[-3]; m = day_dir.parts[-2]; d = day_dir.parts[-1]
+    studies: List[dict] = []
+    for day_dir in iter_recent_day_dirs(days):
+        y, m, d = day_dir.parts[-3:]
         ymd = f"{y}{m}{d}"
-        for study in sorted([x for x in day_dir.iterdir() if x.is_dir()]):
-            series_dirs = [s for s in sorted(study.iterdir()) if s.is_dir()]
-            total_prev=0; first_preview=None; first_preview_url=None; series_count = 0
-            for sdir in series_dirs:
-                series_count += 1
-                previews = sdir / "previews"
-                if previews.is_dir():
-                    files = sorted(previews.glob("*.png")); total_prev += len(files)
-                    if not first_preview and files:
-                        first_preview = files[0]
-                        first_preview_url = "/storage/" + str(first_preview.relative_to(STORE_DIR)).replace("\\","/")
-            meta = get_study_metadata(study)
-            study_pdf = study / "StudyContactSheet.pdf"
-            study_pdf_url = "/storage/" + str(study_pdf.relative_to(STORE_DIR)).replace("\\","/") if study_pdf.exists() else None
-            zip_url = url_for("download_study_zip", ymd=ymd, study_uid=study.name)
-            print_direct_url = url_for("print_direct_study", ymd=ymd, study_uid=study.name) if PRINT_DIRECT else None
-            studies_data.append({
-                "ymd": ymd, "study_dir": study, "study_uid": study.name,
-                "study_uid_short": study.name[:12] + ("…" if len(study.name)>12 else ""),
-                "series_count": series_count, "total_previews": total_prev,
-                "first_preview": bool(first_preview),"first_preview_url": first_preview_url,
-                "patient_name": meta.get("patient_name"), "patient_id": meta.get("patient_id"),
-                "study_desc": meta.get("study_desc"),
-                "date_human": meta.get("date") or f"{d}/{m}/{y}",
-                "study_pdf_url": study_pdf_url, "zip_url": zip_url,
-                "study_page_url": url_for("study_page", ymd=ymd, study_uid=study.name),
-                "print_direct_url": print_direct_url,
-                "haystack": " ".join([meta.get("patient_name") or "", meta.get("patient_id") or "", study.name, ymd])
-            })
-    info = {"ae_title": AE_TITLE, "port": DICOM_PORT, "store_dir": str(STORE_DIR.resolve()),
-            "host_ips": get_ip_addresses(), "pdf_study": PDF_STUDY, "pdf_header": PDF_HEADER,
-            "basic_auth": bool(BASIC_AUTH_USER), "print_direct": PRINT_DIRECT}
-    return render_template("browse.html", info=info, brand_title=BRAND_TITLE, brand_color=BRAND_COLOR, studies=studies_data, days=days)
+        for study_dir in sorted(p for p in day_dir.iterdir() if p.is_dir()):
+            metadata = collect_study_metadata(study_dir)
+            first_preview = None
+            first_preview_url = None
+            total_previews = 0
+            for series_dir in sorted(p for p in study_dir.iterdir() if p.is_dir()):
+                previews = _series_preview_files(series_dir)
+                if previews:
+                    total_previews += len(previews)
+                    if not first_preview:
+                        rel = previews[0].relative_to(STORE_DIR)
+                        first_preview = previews[0]
+                        first_preview_url = url_for("http_storage", subpath=str(rel).replace(os.sep, "/"))
+            study_pdf_path = study_dir / "StudyContactSheet.pdf"
+            study_pdf_url = None
+            if study_pdf_path.exists():
+                rel = study_pdf_path.relative_to(STORE_DIR)
+                study_pdf_url = url_for("http_storage", subpath=str(rel).replace(os.sep, "/"))
+            studies.append(
+                {
+                    "ymd": ymd,
+                    "study_uid": study_dir.name,
+                    "study_uid_short": study_dir.name[:14] + ("…" if len(study_dir.name) > 14 else ""),
+                    "patient_name": metadata.get("patient_name"),
+                    "patient_id": metadata.get("patient_id"),
+                    "study_desc": metadata.get("study_desc"),
+                    "date_human": metadata.get("study_date") or f"{d}/{m}/{y}",
+                    "first_preview": bool(first_preview),
+                    "first_preview_url": first_preview_url,
+                    "total_previews": total_previews,
+                    "series_count": len([p for p in study_dir.iterdir() if p.is_dir()]),
+                    "study_pdf_url": study_pdf_url,
+                    "study_page_url": url_for("study_page", ymd=ymd, study_uid=study_dir.name),
+                    "zip_url": url_for("download_study_zip", ymd=ymd, study_uid=study_dir.name),
+                    "haystack": " ".join(
+                        filter(
+                            None,
+                            [
+                                metadata.get("patient_name"),
+                                metadata.get("patient_id"),
+                                study_dir.name,
+                                ymd,
+                            ],
+                        )
+                    ),
+                }
+            )
+    return render_template(
+        "browse.html",
+        info=_info_payload(),
+        brand_title=BRAND_TITLE,
+        brand_color=BRAND_COLOR,
+        studies=studies,
+        days=days,
+    )
+
 
 @app.route("/studies")
-def studies_redirect(): return redirect("/browse")
+def redirect_studies():
+    return redirect(url_for("browse"))
+
+
 @app.route("/series")
-def series_redirect(): return redirect("/browse")
+def redirect_series():
+    return redirect(url_for("browse"))
+
 
 @app.route("/study/<ymd>/<study_uid>")
-def study_page(ymd, study_uid):
-    if not (len(ymd)==8 and ymd.isdigit()): abort(400)
-    y,m,d = ymd[:4], ymd[4:6], ymd[6:]
+def study_page(ymd: str, study_uid: str):
+    if len(ymd) != 8 or not ymd.isdigit():
+        abort(400, description="Data inválida")
+    y, m, d = ymd[:4], ymd[4:6], ymd[6:]
     study_dir = STORE_DIR / y / m / d / study_uid
-    if not study_dir.exists(): abort(404)
-    meta = get_study_metadata(study_dir)
-    study_pdf = study_dir / "StudyContactSheet.pdf"
-    meta["study_pdf_url"] = "/storage/" + str(study_pdf.relative_to(STORE_DIR)).replace("\\","/") if study_pdf.exists() else None
-    meta["zip_url"] = url_for("download_study_zip", ymd=ymd, study_uid=study_uid)
-    meta["print_direct_url"] = url_for("print_direct_study", ymd=ymd, study_uid=study_uid) if PRINT_DIRECT else None
+    if not study_dir.exists():
+        abort(404, description="Estudo não encontrado")
+    metadata = collect_study_metadata(study_dir)
+    metadata["date_human"] = metadata.get("study_date") or f"{d}/{m}/{y}"
+    metadata["study_pdf_url"] = url_for("http_pdf_study", study_uid=study_uid)
+    metadata["zip_url"] = url_for("download_study_zip", ymd=ymd, study_uid=study_uid)
     series_rows = []
-    for sdir in sorted([x for x in study_dir.iterdir() if x.is_dir()]):
-        previews = sdir / "previews"
-        n = len(list(previews.glob("*.png"))) if previews.is_dir() else 0
-        pdf = sdir / "SeriesContactSheet.pdf"
-        pdf_url = "/storage/" + str(pdf.relative_to(STORE_DIR)).replace("\\","/") if pdf.exists() else None
-        series_rows.append({"series_uid": sdir.name, "n_prev": n, "pdf_url": pdf_url})
-    info = {"ae_title": AE_TITLE, "port": DICOM_PORT, "store_dir": str(STORE_DIR.resolve()),
-            "host_ips": get_ip_addresses(), "pdf_study": PDF_STUDY, "pdf_header": PDF_HEADER,
-            "basic_auth": bool(BASIC_AUTH_USER), "print_direct": PRINT_DIRECT}
-    return render_template("study.html", info=info, brand_title=BRAND_TITLE, brand_color=BRAND_COLOR, study_uid=study_uid, meta=meta, series_rows=series_rows)
+    for series_dir in sorted(p for p in study_dir.iterdir() if p.is_dir()):
+        previews = _series_preview_files(series_dir)
+        series_rows.append(
+            {
+                "series_uid": series_dir.name,
+                "preview_count": len(previews),
+            }
+        )
+    return render_template(
+        "study.html",
+        info=_info_payload(),
+        brand_title=BRAND_TITLE,
+        brand_color=BRAND_COLOR,
+        study_uid=study_uid,
+        meta=metadata,
+        series_rows=series_rows,
+    )
+
 
 @app.route("/download/study/<ymd>/<study_uid>.zip")
-def download_study_zip(ymd, study_uid):
-    if not (len(ymd)==8 and ymd.isdigit()): abort(400)
-    y,m,d = ymd[:4], ymd[4:6], ymd[6:]
+def download_study_zip(ymd: str, study_uid: str):
+    if len(ymd) != 8 or not ymd.isdigit():
+        abort(400, description="Data inválida")
+    y, m, d = ymd[:4], ymd[4:6], ymd[6:]
     study_dir = STORE_DIR / y / m / d / study_uid
-    if not study_dir.exists(): abort(404)
-    mem = io.BytesIO()
-    with zipfile.ZipFile(mem,"w",zipfile.ZIP_DEFLATED) as z:
-        for p in study_dir.rglob("*"):
-            if p.is_file(): z.write(p, arcname=str(p.relative_to(study_dir)))
-    mem.seek(0)
-    return send_file(mem, mimetype="application/zip", as_attachment=True, download_name=f"{study_uid}.zip")
+    if not study_dir.exists():
+        abort(404, description="Estudo não encontrado")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file_path in study_dir.rglob("*"):
+            if file_path.is_file():
+                arcname = file_path.relative_to(study_dir)
+                zf.write(file_path, arcname=str(arcname))
+    buffer.seek(0)
+    return send_file(
+        buffer,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=f"{study_uid}.zip",
+    )
 
-@app.route("/print/direct/study/<ymd>/<study_uid>", methods=["POST"])
-def print_direct_study(ymd, study_uid):
-    if not PRINT_DIRECT: abort(404)
-    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
-    ip = (ip or "").split(",")[0].strip()
-    if ip not in ALLOW_IPS: abort(403)
-    if not (len(ymd)==8 and ymd.isdigit()): abort(400)
-    y,m,d = ymd[:4], ymd[4:6], ymd[6:]
-    pdf = STORE_DIR / y / m / d / study_uid / "StudyContactSheet.pdf"
-    if not pdf.exists(): abort(404, "PDF não encontrado")
-    cmd = ["lp"]
-    if PRINTER_NAME: cmd += ["-d", PRINTER_NAME]
-    cmd += ["-o","media=A4","-o","fit-to-page", str(pdf)]
+
+def _ensure_series_pdf(series_uid: str) -> Path:
+    series_dir = find_series_dir(series_uid)
+    if series_dir is None:
+        abort(404, description="Série não encontrada")
+    return generate_series_pdf(series_dir, allow_preview_generation=True)
+
+
+def _ensure_study_pdf(study_uid: str) -> Path:
+    study_dir = find_study_dir(study_uid)
+    if study_dir is None:
+        abort(404, description="Estudo não encontrado")
+    return generate_study_pdf(study_dir, allow_preview_generation=True)
+
+
+@app.route("/pdf/study/<study_uid>")
+def http_pdf_study(study_uid: str):
+    pdf_path = _ensure_study_pdf(study_uid)
+    return send_file(pdf_path, mimetype="application/pdf", as_attachment=False)
+
+
+@app.route("/pdf/series/<series_uid>")
+def http_pdf_series(series_uid: str):
+    pdf_path = _ensure_series_pdf(series_uid)
+    return send_file(pdf_path, mimetype="application/pdf", as_attachment=False)
+
+
+def _print_via_lp(pdf_path: Path) -> Tuple[bool, str]:
+    lp_path = shutil.which("lp")
+    if not lp_path:
+        return False, "Comando lp (CUPS) não encontrado"
+    command = [lp_path]
+    if PRINTER_NAME:
+        command.extend(["-d", PRINTER_NAME])
+    command.extend(["-o", "media=A4", "-o", "fit-to-page", str(pdf_path)])
     try:
-        subprocess.run(cmd, check=True, capture_output=True)
-        return jsonify({"ok": True})
-    except Exception:
-        abort(500, "Falha ao imprimir")
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as exc:
+        return False, str(exc)
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip() or "Falha desconhecida no lp"
+        return False, stderr
+    return True, completed.stdout.strip()
 
-if __name__ == "__main__":
+
+@app.route("/print/study/<study_uid>")
+def http_print_study(study_uid: str):
+    direct = request.args.get("direct", "0") == "1"
+    pdf_path = _ensure_study_pdf(study_uid)
+    if not direct:
+        return redirect(url_for("http_pdf_study", study_uid=study_uid))
+    if not PRINT_DIRECT:
+        abort(403, description="Impressão direta desabilitada")
+    if _client_ip() not in ALLOW_IPS:
+        abort(403, description="IP não autorizado para impressão direta")
+    ok, message = _print_via_lp(pdf_path)
+    status = 200 if ok else 500
+    return jsonify({"ok": ok, "printed": ok, "message": message}), status
+
+
+@app.route("/print/series/<series_uid>")
+def http_print_series(series_uid: str):
+    direct = request.args.get("direct", "0") == "1"
+    pdf_path = _ensure_series_pdf(series_uid)
+    if not direct:
+        return redirect(url_for("http_pdf_series", series_uid=series_uid))
+    if not PRINT_DIRECT:
+        abort(403, description="Impressão direta desabilitada")
+    if _client_ip() not in ALLOW_IPS:
+        abort(403, description="IP não autorizado para impressão direta")
+    ok, message = _print_via_lp(pdf_path)
+    status = 200 if ok else 500
+    return jsonify({"ok": ok, "printed": ok, "message": message}), status
+
+
+if __name__ == "__main__":  # pragma: no cover - manual execution
+    LOGGER.info("Starting Flask app on 0.0.0.0:%s", WEB_PORT)
     app.run(host="0.0.0.0", port=WEB_PORT, debug=False)

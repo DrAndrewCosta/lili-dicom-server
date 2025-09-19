@@ -84,6 +84,8 @@ Para cada estudo é possível:
 * Baixar o ZIP do estudo (`/download/study/<yyyymmdd>/<StudyUID>.zip`).
 * Navegar pelas séries (`/study/<yyyymmdd>/<StudyUID>`).
 
+Use o seletor **Período** no topo da página para ampliar a listagem (30 dias, 90 dias, Todos etc.). Os PDFs sempre são (re)gerados pelas rotas `/pdf/...`, garantindo que o layout 2×4 atualizado seja aplicado mesmo em estudos antigos.
+
 Cada série permite gerar/abrir PDF, imprimir pelo navegador ou enviar para a impressora com `lp` (quando permitido).
 
 ### Impressão direta (CUPS)

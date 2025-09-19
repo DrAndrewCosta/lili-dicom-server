@@ -1,15 +1,27 @@
 {% extends "base.html" %}
 {% block content %}
-  <div class="card" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-    <input id="q" class="input" placeholder="Pesquisar (Paciente, ID, UID, data)..." oninput="filterCards()">
-    <span class="small">Últimos {{ days }} dia(s)</span>
+  <div class="card" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+    <input id="q" class="input" style="flex:1 1 260px" placeholder="Pesquisar (Paciente, ID, UID, data)..." oninput="filterCards()">
+    <form method="get" style="display:flex;gap:6px;align-items:center;">
+      <label for="days" class="small">Período:</label>
+      <select id="days" name="days" class="select" onchange="this.form.submit()">
+        {% for opt_value, opt_label in days_options %}
+          {% if opt_value is none %}
+            <option value="all" {% if selected_days is none %}selected{% endif %}>{{ opt_label }}</option>
+          {% else %}
+            <option value="{{ opt_value }}" {% if selected_days == opt_value %}selected{% endif %}>{{ opt_label }}</option>
+          {% endif %}
+        {% endfor %}
+      </select>
+    </form>
+    <span class="small">Mostrando {{ days_label }}</span>
   </div>
 
   {% if studies %}
   <div class="study-grid">
     {% for st in studies %}
       {% set pdf_ready = st.study_pdf_ready %}
-      {% set pdf_url = st.study_pdf_url or url_for('http_pdf_study', study_uid=st.study_uid) %}
+      {% set pdf_url = url_for('http_pdf_study', study_uid=st.study_uid) %}
       {% set print_url     = url_for('http_print_study', study_uid=st.study_uid) %}
       {% set print_url_dir = print_url + '?direct=1' %}
       <div class="study-card" data-hay="{{ st.haystack }}">
@@ -45,13 +57,13 @@
       </div>
     {% endfor %}
   </div>
-  {% else %}
-    <div class="card empty-state">
-      <div class="emoji">🗂️</div>
-      <div>Sem estudos nos últimos {{ days }} dia(s).</div>
-      <div class="small">Assim que um estudo chegar, ele aparecerá aqui automaticamente.</div>
-    </div>
-  {% endif %}
+    {% else %}
+      <div class="card empty-state">
+        <div class="emoji">🗂️</div>
+        <div>Nenhum estudo em {{ days_label }}.</div>
+        <div class="small">Altere o período ou aguarde novos envios para visualizar aqui.</div>
+      </div>
+    {% endif %}
 
   <script>
     function filterCards() {

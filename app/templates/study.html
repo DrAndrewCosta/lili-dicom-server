@@ -8,7 +8,7 @@
     </div>
 
     {% set pdf_ready = meta.study_pdf_ready %}
-    {% set pdf_url       = meta.study_pdf_url or url_for('http_pdf_study',   study_uid=study_uid) %}
+    {% set pdf_url       = meta.study_pdf_url %}
     {% set print_url     = url_for('http_print_study', study_uid=study_uid) %}
     {% set print_url_dir = print_url + '?direct=1' %}
 
@@ -26,7 +26,7 @@
     <table class="table">
       <tr><th>Série</th><th>Previews</th><th>Ações</th></tr>
       {% for row in series_rows %}
-        {% set s_pdf  = row.series_pdf_url or url_for('http_pdf_series',   series_uid=row.series_uid) %}
+        {% set s_pdf  = row.series_pdf_url %}
         {% set s_prn  = url_for('http_print_series', series_uid=row.series_uid) %}
         <tr>
           <td><code>{{ row.series_uid }}</code></td>

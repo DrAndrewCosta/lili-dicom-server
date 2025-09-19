@@ -189,18 +189,18 @@ def _draw_contact_sheet(
     cols, rows = max(PDF_COLS, 1), max(PDF_ROWS, 1)
     per_page = max(cols * rows, 1)
 
-    margin_x = 24.0
-    margin_y = 24.0
-    gutter_x = 12.0
-    gutter_y = 12.0
+    margin_x = 16.0
+    margin_y = 18.0
+    gutter_x = 10.0 if cols > 1 else 0.0
+    gutter_y = 12.0 if rows > 1 else 0.0
 
     header_height = 0.0
     if header:
-        header_height += 20.0
+        header_height += 18.0
     if subtitle:
         header_height += 16.0
     if header_height:
-        header_height += 8.0
+        header_height += 6.0
 
     usable_width = PAGE_W - 2 * margin_x - gutter_x * (cols - 1)
     usable_height = PAGE_H - 2 * margin_y - header_height - gutter_y * (rows - 1)
@@ -219,7 +219,7 @@ def _draw_contact_sheet(
         if header:
             c.setFont("Helvetica-Bold", 13)
             c.drawCentredString(PAGE_W / 2, y, header)
-            y -= 18
+            y -= 16
         if subtitle:
             subtext = subtitle
             if total_pages > 1:
@@ -243,7 +243,7 @@ def _draw_contact_sheet(
             with Image.open(image_path) as image:
                 image = image.convert("RGB")
                 buf = io.BytesIO()
-                image.save(buf, format="JPEG", quality=90, optimize=True)
+                image.save(buf, format="JPEG", quality=92, optimize=True)
                 buf.seek(0)
                 reader = ImageReader(buf)
                 iw, ih = image.size
@@ -258,6 +258,8 @@ def _draw_contact_sheet(
         dy = top_y - cell_h + (cell_h - draw_h) / 2
         c.drawImage(reader, dx, dy, width=draw_w, height=draw_h)
 
+    if not image_paths:
+        draw_header(1)
     c.save()
 
 
@@ -451,13 +453,27 @@ def collect_study_metadata(study_dir: Path) -> dict:
     return metadata
 
 
-def iter_recent_day_dirs(days: int) -> Iterable[Path]:
-    now = datetime.now()
-    for i in range(days):
-        dt = now - timedelta(days=i)
-        day_dir = STORE_DIR / dt.strftime("%Y") / dt.strftime("%m") / dt.strftime("%d")
-        if day_dir.exists():
-            yield day_dir
+def iter_recent_day_dirs(days: Optional[int]) -> Iterable[Path]:
+    entries: List[Tuple[datetime, Path]] = []
+    for day_dir in _iter_day_dirs():
+        try:
+            y, m, d = (int(part) for part in day_dir.parts[-3:])
+            dt = datetime(y, m, d)
+        except Exception:
+            continue
+        entries.append((dt, day_dir))
+
+    entries.sort(key=lambda item: item[0], reverse=True)
+
+    if days is None:
+        for _, path in entries:
+            yield path
+        return
+
+    cutoff = datetime.now() - timedelta(days=max(days - 1, 0))
+    for dt, path in entries:
+        if dt >= cutoff:
+            yield path
 
 
 def get_host_ips() -> List[str]:
@@ -672,9 +688,22 @@ def index():
 
 @app.route("/browse")
 def browse():
-    days = int(request.args.get("days", "7"))
+    raw_days = (request.args.get("days") or "").strip().lower()
+    default_days = 30
+    selected_days: Optional[int]
+    if raw_days in {"", str(default_days)}:
+        selected_days = default_days
+    elif raw_days in {"*", "all", "todos", "tudo", "infinite", "inf"}:
+        selected_days = None
+    else:
+        try:
+            candidate = int(raw_days)
+            selected_days = candidate if candidate > 0 else None
+        except ValueError:
+            selected_days = default_days
+
     studies: List[dict] = []
-    for day_dir in iter_recent_day_dirs(days):
+    for day_dir in iter_recent_day_dirs(selected_days):
         y, m, d = day_dir.parts[-3:]
         ymd = f"{y}{m}{d}"
         for study_dir in sorted(p for p in day_dir.iterdir() if p.is_dir()):
@@ -691,10 +720,7 @@ def browse():
                         first_preview = previews[0]
                         first_preview_url = url_for("http_storage", subpath=str(rel).replace(os.sep, "/"))
             study_pdf_path = study_dir / "StudyContactSheet.pdf"
-            study_pdf_url = None
-            if study_pdf_path.exists():
-                rel = study_pdf_path.relative_to(STORE_DIR)
-                study_pdf_url = url_for("http_storage", subpath=str(rel).replace(os.sep, "/"))
+            study_pdf_ready = study_pdf_path.exists()
             studies.append(
                 {
                     "ymd": ymd,
@@ -708,8 +734,7 @@ def browse():
                     "first_preview_url": first_preview_url,
                     "total_previews": total_previews,
                     "series_count": len([p for p in study_dir.iterdir() if p.is_dir()]),
-                    "study_pdf_url": study_pdf_url,
-                    "study_pdf_ready": bool(study_pdf_url),
+                    "study_pdf_ready": study_pdf_ready,
                     "study_page_url": url_for("study_page", ymd=ymd, study_uid=study_dir.name),
                     "zip_url": url_for("download_study_zip", ymd=ymd, study_uid=study_dir.name),
                     "haystack": " ".join(
@@ -725,13 +750,34 @@ def browse():
                     ),
                 }
             )
+    if selected_days is None:
+        days_label = "todos os estudos"
+    elif selected_days == 1:
+        days_label = "último dia"
+    else:
+        days_label = f"últimos {selected_days} dias"
+
+    days_options: List[Tuple[Optional[int], str]] = [
+        (7, "7 dias"),
+        (30, "30 dias"),
+        (90, "90 dias"),
+        (180, "180 dias"),
+        (None, "Todos"),
+    ]
+
+    option_values = {value for value, _ in days_options if value is not None}
+    if selected_days is not None and selected_days not in option_values:
+        days_options.insert(0, (selected_days, f"{selected_days} dias"))
+
     return render_template(
         "browse.html",
         info=_info_payload(),
         brand_title=BRAND_TITLE,
         brand_color=BRAND_COLOR,
         studies=studies,
-        days=days,
+        selected_days=selected_days,
+        days_label=days_label,
+        days_options=days_options,
     )
 
 
@@ -756,28 +802,19 @@ def study_page(ymd: str, study_uid: str):
     metadata = collect_study_metadata(study_dir)
     metadata["date_human"] = metadata.get("study_date") or f"{d}/{m}/{y}"
     study_pdf_path = study_dir / "StudyContactSheet.pdf"
-    if study_pdf_path.exists():
-        rel = study_pdf_path.relative_to(STORE_DIR)
-        metadata["study_pdf_url"] = url_for("http_storage", subpath=str(rel).replace(os.sep, "/"))
-        metadata["study_pdf_ready"] = True
-    else:
-        metadata["study_pdf_url"] = None
-        metadata["study_pdf_ready"] = False
+    metadata["study_pdf_ready"] = study_pdf_path.exists()
+    metadata["study_pdf_url"] = url_for("http_pdf_study", study_uid=study_uid)
     metadata["zip_url"] = url_for("download_study_zip", ymd=ymd, study_uid=study_uid)
     series_rows = []
     for series_dir in sorted(p for p in study_dir.iterdir() if p.is_dir()):
         previews = _series_preview_files(series_dir)
         series_pdf_path = series_dir / "SeriesContactSheet.pdf"
         series_pdf_ready = series_pdf_path.exists()
-        series_pdf_url = None
-        if series_pdf_ready:
-            rel = series_pdf_path.relative_to(STORE_DIR)
-            series_pdf_url = url_for("http_storage", subpath=str(rel).replace(os.sep, "/"))
         series_rows.append(
             {
                 "series_uid": series_dir.name,
                 "preview_count": len(previews),
-                "series_pdf_url": series_pdf_url,
+                "series_pdf_url": url_for("http_pdf_series", series_uid=series_dir.name),
                 "series_pdf_ready": series_pdf_ready,
             }
         )

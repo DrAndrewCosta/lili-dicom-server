@@ -7,7 +7,8 @@
       {% if meta.study_desc %}<div class="small">Descrição: {{ meta.study_desc }}</div>{% endif %}
     </div>
 
-    {% set pdf_url       = url_for('http_pdf_study',   study_uid=study_uid) %}
+    {% set pdf_ready = meta.study_pdf_ready %}
+    {% set pdf_url       = meta.study_pdf_url or url_for('http_pdf_study',   study_uid=study_uid) %}
     {% set print_url     = url_for('http_print_study', study_uid=study_uid) %}
     {% set print_url_dir = print_url + '?direct=1' %}
 
@@ -15,7 +16,7 @@
       <a class="btn primary" href="{{ pdf_url }}" target="_blank">Abrir PDF</a>
       <a class="btn" href="{{ pdf_url }}" target="_blank" onclick="return openAndSuggestPrint(this.href);">Imprimir PDF</a>
       {% if info.print_direct %}
-        <button class="btn" onclick="printDirect('{{ print_url_dir }}')">Imprimir direto</button>
+        <button class="btn" {% if not pdf_ready %}disabled title="Gere o PDF primeiro"{% else %}onclick="printDirect('{{ print_url_dir }}')"{% endif %}>Imprimir direto</button>
       {% endif %}
       <a class="btn" href="{{ meta.zip_url }}">Baixar ZIP</a>
     </div>
@@ -23,16 +24,19 @@
 
   <div class="card">
     <table class="table">
-      <tr><th>Série</th><th>Previews</th><th>PDF</th><th>Ações</th></tr>
+      <tr><th>Série</th><th>Previews</th><th>Ações</th></tr>
       {% for row in series_rows %}
-        {% set s_pdf  = url_for('http_pdf_series',   series_uid=row.series_uid) %}
+        {% set s_pdf  = row.series_pdf_url or url_for('http_pdf_series',   series_uid=row.series_uid) %}
         {% set s_prn  = url_for('http_print_series', series_uid=row.series_uid) %}
         <tr>
           <td><code>{{ row.series_uid }}</code></td>
-          <td>{{ row.n_prev }}</td>
-          <td>{% if row.pdf_url %}<a href="{{ s_pdf }}" target="_blank">Abrir</a>{% else %}(será gerado ao abrir){% endif %}</td>
-          <td>
-            <a class="btn" href="{{ s_pdf }}" target="_blank" onclick="return openAndSuggestPrint(this.href);">Imprimir</a>
+          <td>{{ row.preview_count }}</td>
+          <td style="display:flex;gap:8px;flex-wrap:wrap;">
+            <a class="btn" href="{{ s_pdf }}" target="_blank">Abrir PDF</a>
+            <a class="btn" href="{{ s_pdf }}" target="_blank" onclick="return openAndSuggestPrint(this.href);">Imprimir PDF</a>
+            {% if info.print_direct %}
+              <button class="btn" {% if not row.series_pdf_ready %}disabled title="Gere o PDF da série primeiro"{% else %}onclick="printDirect('{{ s_prn }}?direct=1')"{% endif %}>Imprimir direto</button>
+            {% endif %}
           </td>
         </tr>
       {% endfor %}
